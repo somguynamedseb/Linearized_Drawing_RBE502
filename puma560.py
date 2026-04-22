@@ -77,9 +77,7 @@ class Puma560:
         for i in range(6):
             self.Mrel.append(np.linalg.inv(prev) @ self.Mlist_abs[i])
             prev = self.Mlist_abs[i]
-        
-    
-    
+
     def _ad_little(self, V):
         # 6x6 ad operator for bracket of twists
         w, v = V[0:3], V[3:6]
@@ -165,8 +163,6 @@ class Puma560:
             Js = self._space_jacobian(theta)
             theta = theta + np.dot(np.linalg.pinv(Js), Vs)
         return theta, False
-    
-
 
     def mass_matrix(self, q):
         n = self.jNum
