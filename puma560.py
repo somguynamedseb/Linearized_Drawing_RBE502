@@ -25,13 +25,13 @@ class Puma560:
         q4 = np.array([a3, d3, a2+d4])
         q5 = q4
         q6 = q4
-        Q  = np.array([q1, q2, q3, q4, q5, q6])
+        self.Q  = np.array([q1, q2, q3, q4, q5, q6])
 
         # screw axes in space frame when the manipulator is at home position
         self.slist = np.zeros((6,6))
         for i in range(6):
             self.slist[0:3,i] = self.w[i]
-            self.slist[3:6,i] = -np.cross(self.w[i], Q[i])
+            self.slist[3:6,i] = -np.cross(self.w[i], self.Q[i])
 
         #home matrix configuration of the end-effector
         self.M = np.eye(4)
@@ -59,7 +59,7 @@ class Puma560:
         # Home configs of each link frame in space (frame at CoM)
         self.Mlist_abs = []
         for i in range(6):
-            com_space = Q[i] + com[:, i]
+            com_space = self.Q[i] + com[:, i]
             Mi = np.eye(4); Mi[0:3, 3] = com_space
             self.Mlist_abs.append(Mi)
 
@@ -77,6 +77,11 @@ class Puma560:
         for i in range(6):
             self.Mrel.append(np.linalg.inv(prev) @ self.Mlist_abs[i])
             prev = self.Mlist_abs[i]
+
+    def _skew(self, w):
+        return np.array([[0,    -w[2],  w[1]],
+                        [w[2],  0,    -w[0]],
+                        [-w[1], w[0],  0   ]])
 
     def _ad_little(self, V):
         # 6x6 ad operator for bracket of twists
@@ -163,6 +168,40 @@ class Puma560:
             Js = self._space_jacobian(theta)
             theta = theta + np.dot(np.linalg.pinv(Js), Vs)
         return theta, False
+
+    def inverse_dynamics(self, q, qd, qdd, g_vec=np.array([0, 0, -9.81]), Ftip=np.zeros(6)):
+        """
+        Newton-Euler inverse dynamics.
+        Returns the joint torques tau that produce (q, qd, qdd).
+        """
+        n = self.jNum
+
+        # Relative transforms at current q: T_{i+1, i}
+        T_rel = []
+        for i in range(n):
+            T_rel.append(self._exp6_screw(-self.Alist[i], q[i]) @ np.linalg.inv(self.Mrel[i]))
+        T_rel.append(np.eye(4))   # tip frame = last link frame (no EE offset)
+
+        # Forward pass: twists and accelerations
+        V  = [np.zeros(6) for _ in range(n+1)]
+        Vd = [np.zeros(6) for _ in range(n+1)]
+        Vd[0][3:6] = -g_vec        # gravity injected as base acceleration
+        for i in range(n):
+            AdT = self._adjoint(T_rel[i])
+            V[i+1]  = AdT @ V[i]  + self.Alist[i] * qd[i]
+            Vd[i+1] = AdT @ Vd[i] + self._ad_little(V[i+1]) @ self.Alist[i] * qd[i] \
+                                + self.Alist[i] * qdd[i]
+
+        # Backward pass: wrenches and torques
+        F = [np.zeros(6) for _ in range(n+1)]
+        F[n] = Ftip
+        tau = np.zeros(n)
+        for i in range(n-1, -1, -1):
+            Gi = self.Glist[i]
+            F[i] = self._adjoint(T_rel[i+1]).T @ F[i+1] + Gi @ Vd[i+1] \
+                - self._ad_little(V[i+1]).T @ (Gi @ V[i+1])
+            tau[i] = F[i] @ self.Alist[i]
+        return tau
 
     def mass_matrix(self, q):
         n = self.jNum
