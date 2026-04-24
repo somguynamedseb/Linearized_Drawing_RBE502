@@ -52,9 +52,34 @@ class PumaVisualizer:
         reach = 1.2
         ax.set_xlim([-reach, reach])
         ax.set_ylim([-reach, reach])
-        ax.set_zlim([0, reach])
+        ax.set_zlim([-0.5, reach])        # extend axis down so pedestal is visible
         ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
-        ax.set_box_aspect([1, 1, 0.8])
+        ax.set_box_aspect([1, 1, 1])
+
+        # --- Physical pedestal (cylinder on ground, top at z=0 = joint 1 axis) ---
+        base_radius = 0.15
+        pedestal_height = 0.24             # how far below joint 1 the floor is
+        phi = np.linspace(0, 2*np.pi, 40)
+        z = np.linspace(-pedestal_height, 0, 2)
+        PHI, Z = np.meshgrid(phi, z)
+        X = base_radius * np.cos(PHI)
+        Y = base_radius * np.sin(PHI)
+        ax.plot_surface(X, Y, Z, color='gray', alpha=0.5, linewidth=0)
+
+        # Top cap (where the arm emerges)
+        cx = base_radius * np.cos(phi)
+        cy = base_radius * np.sin(phi)
+        ax.plot(cx, cy, np.zeros_like(phi), color='dimgray', linewidth=2)
+
+        # Floor circle (for visual reference)
+        ax.plot(cx, cy, -pedestal_height * np.ones_like(phi),
+                color='dimgray', linewidth=2)
+
+        # Floor plane (optional light grid reference)
+        floor_size = 0.8
+        xx, yy = np.meshgrid([-floor_size, floor_size], [-floor_size, floor_size])
+        ax.plot_surface(xx, yy, -pedestal_height * np.ones_like(xx),
+                        color='lightgray', alpha=0.15, linewidth=0)
 
     def _draw(self, ax, theta, title=''):
         pts = self.joint_positions(theta)
