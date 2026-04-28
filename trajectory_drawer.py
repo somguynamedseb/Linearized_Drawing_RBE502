@@ -14,7 +14,7 @@ import math
 import json
 
 # ---- Robot workspace parameters ----------------------------------------------
-MIN_RADIUS_M = 0.15
+MIN_RADIUS_M = 0.3
 MAX_RADIUS_M = 0.7
 Z_HEIGHT    = 0.2
 

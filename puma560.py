@@ -39,6 +39,17 @@ class Puma560:
         q5 = np.array([-0.1502, 0.400, 1.101])
         q6 = np.array([-0.1502, 0.400, 1.021])
         self.Q = np.array([q1, q2, q3, q4, q5, q6])
+        
+        joint_limits = [
+            (-2.79,  2.79),
+            (-3.93,  0.79),
+            (-0.79,  3.93),
+            (-1.92,  2.97),
+            (-1.75,  1.75),
+            (-4.64,  4.64),
+        ]
+        self.q_min = np.array([lo for lo, _ in joint_limits])
+        self.q_max = np.array([hi for _, hi in joint_limits])
 
         # Screw axes in the space (world) frame at home: S_i = [w_i; -w_i x q_i]
         self.slist = np.zeros((6, 6))
@@ -184,15 +195,94 @@ class Puma560:
         T = np.dot(T, self.M)
         return T
     
-    def IK(self, T_sd, theta0 = np.array([0,0,0,0,0,0]), tol=1e-3, max_iter=20):
-        theta = np.array(theta0, dtype=float)
+    def IK(self, T_sd, theta0=None, tol=1e-3, max_iter=100, lam=0.05,
+        n_restarts=8, seed=0):
+        """
+        Damped least-squares IK with multi-start branch search.
+
+        Tries seeds in this order:
+        1. theta0 if provided (warm start from previous trajectory point)
+        2. A "smart home" in the middle of joint range (elbow up)
+        3. Hard zero (the kinematic home)
+        4. Branch flips: shoulder-flipped, elbow-down, both flipped
+        5. Random fillers within limits, until n_restarts seeds total
+
+        Returns the first seed that converges. If none do, returns the
+        best in-limits attempt by twist-norm residual.
+
+        For trajectories, pass the previous frame's solution as theta0 --
+        one seed is usually enough when consecutive targets are nearby.
+        """
+        n   = self.jNum
+        rng = np.random.default_rng(seed)
+
+        # Mid-range "elbow up" seed -- the single biggest reliability win,
+        # because q=zeros sits on joint 2's max and joint 3's min.
+        smart_home = np.array([0.0, -1.5,  1.5, 0.0, 0.0, 0.0])
+
+        seeds = []
+        if theta0 is not None:
+            seeds.append(np.clip(np.asarray(theta0, dtype=float),
+                                self.q_min, self.q_max))
+        seeds.append(smart_home)
+        seeds.append(np.zeros(n))                               # original home
+        seeds.append(np.array([np.pi, -1.5,  1.5, 0.0, 0.0, 0.0]))  # shoulder flip
+        seeds.append(np.array([0.0,   -1.5, -0.5, 0.0, 0.0, 0.0]))  # elbow down
+        seeds.append(np.array([np.pi, -1.5, -0.5, 0.0, 0.0, 0.0]))  # both
+        while len(seeds) < n_restarts:
+            seeds.append(rng.uniform(self.q_min, self.q_max))
+
+        best_q, best_err = None, np.inf
+        for q_seed in seeds:
+            q, ok = self._ik_single(T_sd, q_seed, tol, max_iter, lam)
+            if ok:
+                return q, True
+            Vs  = self._log6(T_sd @ np.linalg.inv(self.FK(q)))
+            err = np.linalg.norm(Vs)
+            if err < best_err:
+                best_err, best_q = err, q
+
+        return best_q, False
+
+
+    def _ik_single(self, T_sd, theta0, tol, max_iter, lam):
+        """Single-start damped LS IK with joint-limit handling."""
+        n   = self.jNum
+        eps = 1e-9
+        I6  = np.eye(6)
+        theta = np.clip(np.asarray(theta0, dtype=float), self.q_min, self.q_max)
+
         for _ in range(max_iter):
             T_sb = self.FK(theta)
-            Vs = self._log6(np.dot(T_sd, np.linalg.inv(T_sb)))
+            Vs   = self._log6(T_sd @ np.linalg.inv(T_sb))
             if np.linalg.norm(Vs[:3]) < tol and np.linalg.norm(Vs[3:]) < tol:
                 return theta, True
-            Js = self._space_jacobian(theta)
-            theta = theta + np.dot(np.linalg.pinv(Js), Vs)
+
+            Js     = self._space_jacobian(theta)
+            dtheta = Js.T @ np.linalg.solve(Js @ Js.T + lam**2 * I6, Vs)
+
+            at_low  = (theta <= self.q_min + 1e-9) & (dtheta < 0)
+            at_high = (theta >= self.q_max - 1e-9) & (dtheta > 0)
+            locked  = at_low | at_high
+            if np.any(locked):
+                free = ~locked
+                if not np.any(free):
+                    break
+                Jf = Js[:, free]
+                df = Jf.T @ np.linalg.solve(Jf @ Jf.T + lam**2 * I6, Vs)
+                dtheta = np.zeros(n)
+                dtheta[free] = df
+
+            alpha = 1.0
+            for i in range(n):
+                if   dtheta[i] >  eps:
+                    alpha = min(alpha, (self.q_max[i] - theta[i]) / dtheta[i])
+                elif dtheta[i] < -eps:
+                    alpha = min(alpha, (self.q_min[i] - theta[i]) / dtheta[i])
+            alpha = max(alpha, 0.0)
+
+            theta = np.clip(theta + alpha * dtheta, self.q_min, self.q_max)
+
         return theta, False
 
     def inverse_dynamics(self, q, qd, qdd, g_vec=np.array([0, 0, -9.81]), Ftip=np.zeros(6)):

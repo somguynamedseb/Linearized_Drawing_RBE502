@@ -19,12 +19,18 @@ from scipy.interpolate import make_interp_spline
 
 
 _DEFAULT_SEEDS = [
+    # Mid-range "elbow up" -- the most reliable starting pose. Zeros sits on
+    # joint 2's max (+0.79) and joint 3's min (-0.79), so the original first
+    # seed was actively bad for ~half of all targets.
+    ("smart home (elbow up)",   np.array([0, -1.5,    1.5,      0, 0,        0])),
     ("zeros",                   np.zeros(6)),
     ("shoulder -90",            np.array([0, -np.pi/2, 0,        0, 0,        0])),
     ("shoulder -90, elbow +90", np.array([0, -np.pi/2, np.pi/2,  0, 0,        0])),
     ("wrist pitch +90",         np.array([0,  0,        0,       0, np.pi/2,  0])),
     ("shoulder -90, wrist +90", np.array([0, -np.pi/2,  0,       0, np.pi/2,  0])),
     ("elbow -90, wrist +90",    np.array([0,  0,       -np.pi/2, 0, np.pi/2,  0])),
+    ("elbow down",              np.array([0, -1.5,   -0.5,       0, 0,        0])),
+    ("shoulder flipped",        np.array([np.pi, -1.5, 1.5,      0, 0,        0])),
 ]
 
 IK_MAX_ITER  = 50
@@ -32,10 +38,15 @@ IK_TOL       = 1e-3
 CLEAN_FK_TOL = 5e-3
 N_RANDOM     = 30
 
+def _wrap(q, q_min=None, q_max=None):
+    """Wrap each joint to [-pi, pi], but only if the wrap stays in limits."""
+    q = np.asarray(q, dtype=float)
+    wrapped = (q + np.pi) % (2 * np.pi) - np.pi
+    if q_min is None or q_max is None:
+        return wrapped
+    keep_wrap = (wrapped >= q_min) & (wrapped <= q_max)
+    return np.where(keep_wrap, wrapped, q)
 
-def _wrap(q):
-    """Wrap each joint to [-pi, pi]."""
-    return (np.asarray(q) + np.pi) % (2 * np.pi) - np.pi
 
 
 def _solve_one(robot, x, y, z, R_ee, seed):
