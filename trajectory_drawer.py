@@ -14,9 +14,9 @@ import math
 import json
 
 # ---- Robot workspace parameters ----------------------------------------------
-MIN_RADIUS_M = 0.2
-MAX_RADIUS_M = 0.8
-Z_HEIGHT    = -0.24
+MIN_RADIUS_M = 0.15
+MAX_RADIUS_M = 0.7
+Z_HEIGHT    = 0.2
 
 # ---- UI parameters -----------------------------------------------------------
 CANVAS_SIZE       = 800              # pixels (square canvas)

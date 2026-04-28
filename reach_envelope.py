@@ -104,21 +104,22 @@ if __name__ == '__main__':
     robot = Puma560()
 
     # --- Pick height(s) to analyze ---
-    Z_TARGET = -0.24        # change this to slice at a different height
+    Z_TARGET = 0.2        # change this to slice at a different height
     Z_TOL    = 0.02       # +/- slab thickness (smaller = sharper, need more samples)
     N        = 100000     # sample count
 
     # --- Optional: realistic joint limits instead of full +/- pi ---
     # Comment this out to use full rotation.
     joint_limits = [
-        (-np.pi,  np.pi),   # joint 1  (~ +/- 160 deg)
-        (-0.79,  3.93),   # joint 2
-        (-3.93,  0.79),   # joint 3
-        (-2.79,  2.79),   # joint 4
-        (-1.75,  1.75),   # joint 5  (~ +/- 100 deg)
-        (-4.64,  4.64),   # joint 6
+        (-2.79,   2.79),  
+        (-3.93,   0.79),  
+        (-0.79,   3.93),  
+        (-1.92,   2.97),  
+        (-1.75,   1.75),  
+        (-4.64,   4.64),  
     ]
-
+    
+    # pts = reach_envelope(robot, z_target=Z_TARGET, z_tol=Z_TOL, n_samples=N)
     pts = reach_envelope(robot, z_target=Z_TARGET, z_tol=Z_TOL, n_samples=N, joint_limits=joint_limits)
     plot_reach(pts, z_target=Z_TARGET, robot=robot)
     plt.tight_layout()

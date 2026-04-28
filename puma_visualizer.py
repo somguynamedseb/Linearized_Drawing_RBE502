@@ -58,7 +58,7 @@ class PumaVisualizer:
 
         # --- Physical pedestal (cylinder on ground, top at z=0 = joint 1 axis) ---
         base_radius = 0.15
-        pedestal_height = 0.24             # how far below joint 1 the floor is
+        pedestal_height = 0            # how far below joint 1 the floor is
         phi = np.linspace(0, 2*np.pi, 40)
         z = np.linspace(-pedestal_height, 0, 2)
         PHI, Z = np.meshgrid(phi, z)

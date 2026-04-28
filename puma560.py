@@ -2,52 +2,82 @@ import numpy as np
 
 class Puma560:
     def __init__(self):
-        # link lengths in meters
-        a2 = 0.4318 
-        a3 = 0.0203 
-        d3 = 0.15005
-        d4 = 0.4318 
-        self.jNum = 6 # number of joints
+        self.jNum = 6  # number of joints
 
-        # unit vectors along the joint axes in the home configuration
+        # ============================================================
+        # Kinematics extracted directly from the Webots PROTO file.
+        # Frame: Webots WORLD frame, z-up, floor at z = 0.
+        # Joint 1 (shoulder) sits at z = 0.669.
+        # All values come from walking the PROTO's HingeJoint anchors
+        # and endPoint translations down the tree.
+        # ============================================================
+
+        # Joint axis directions, verbatim from the PROTO.
+        # At home (all parent rotations = 0) each link frame is aligned
+        # with the world frame, so these are also the axes in space.
         self.w = np.array([
-                    [0,0,1],
-                    [0,1,0],
-                    [0,1,0],
-                    [0,0,1],
-                    [0,1,0],
-                    [0,0,1]])
+            [ 0, 0, 1],   # joint 1  shoulder      PROTO axis  0  0  1
+            [-1, 0, 0],   # joint 2  upper arm     PROTO axis -1  0  0
+            [-1, 0, 0],   # joint 3  elbow         PROTO axis -1  0  0
+            [ 0, 0, 1],   # joint 4  wrist roll    PROTO axis  0  0  1
+            [-1, 0, 0],   # joint 5  wrist pitch   PROTO axis -1  0  0
+            [ 0, 0, 1],   # joint 6  tool roll     PROTO axis  0  0  1
+        ], dtype=float)
 
-        # position of each joint in the home configuration
-        q1 = np.array([0, 0,0])
-        q2 = np.array([0, 0, 0])
-        q3 = np.array([0, d3, a2])
-        q4 = np.array([a3, d3, a2+d4])
-        q5 = q4
-        q6 = q4
-        self.Q  = np.array([q1, q2, q3, q4, q5, q6])
+        # A point on each joint axis at home, in the world frame.
+        # Cumulative anchor walk:
+        #   J1: shoulder anchor                       (0, 0, 0.669)
+        #   J2: J1 + (-0.1622,  0,     0    )
+        #   J3: J2 + ( 0.086,   0.42,  0    )
+        #   J4: J3 + (-0.074,  -0.02,  0.353)
+        #   J5: J4 + ( 0,       0,     0.079)
+        #   J6: J5 + ( 0,       0,    -0.08 )
+        q1 = np.array([ 0.0000, 0.000, 0.669])
+        q2 = np.array([-0.1622, 0.000, 0.669])
+        q3 = np.array([-0.0762, 0.420, 0.669])
+        q4 = np.array([-0.1502, 0.400, 1.022])
+        q5 = np.array([-0.1502, 0.400, 1.101])
+        q6 = np.array([-0.1502, 0.400, 1.021])
+        self.Q = np.array([q1, q2, q3, q4, q5, q6])
 
-        # screw axes in space frame when the manipulator is at home position
-        self.slist = np.zeros((6,6))
+        # Screw axes in the space (world) frame at home: S_i = [w_i; -w_i x q_i]
+        self.slist = np.zeros((6, 6))
         for i in range(6):
-            self.slist[0:3,i] = self.w[i]
-            self.slist[3:6,i] = -np.cross(self.w[i], self.Q[i])
+            self.slist[0:3, i] = self.w[i]
+            self.slist[3:6, i] = -np.cross(self.w[i], self.Q[i])
 
-        #home matrix configuration of the end-effector
+        # End-effector home pose: joint-6 endpoint (tool flange) frame.
+        # At home, R = I and p = q6.
+        # NOTE: the gripper sits ~0.23 m further along the flange's +z;
+        # if you want the gripper tip pose instead of the flange pose,
+        # post-multiply M by that fixed offset.
         self.M = np.eye(4)
-        self.M[0:3, 3] = [a3, d3, a2+d4] 
-        
-        #skew symmetric matrix of w
-        self.w_skew = np.zeros((6,3,3))
+        self.M[0:3, 3] = np.copy(q6)
+
+        # Skew-symmetric matrices of each w_i (used by FK and Jacobian)
+        self.w_skew = np.zeros((6, 3, 3))
         for i in range(6):
-            self.w_skew[i] = np.array([ [0, -self.w[i][2], self.w[i][1]],
-                                        [self.w[i][2], 0, -self.w[i][0]],
-                                        [-self.w[i][1], self.w[i][0], 0]])
-        
-        
-        
-        # --- Dynamics setup ---
-        # Link i's body frame: at its CoM, axes aligned with space frame at home
+            self.w_skew[i] = np.array([
+                [            0, -self.w[i][2],  self.w[i][1]],
+                [ self.w[i][2],             0, -self.w[i][0]],
+                [-self.w[i][1],  self.w[i][0],             0],
+            ])
+
+        # ============================================================
+        # Dynamics setup
+        # WARNING: the mass/CoM/inertia values below are the textbook
+        # PUMA 560 figures (Corke / Armstrong-Khatib-Burdick). They were
+        # defined for the *old* home pose with the arm pointing straight
+        # up. The Webots home is different (arm extended along +y), so
+        # the CoM offsets are no longer in the right body-frame
+        # directions. FK / IK will be correct, but inverse_dynamics(),
+        # mass_matrix(), gravity_forces() and coriolis_matrix() will be
+        # off until you re-derive these in the new pose. Webots itself
+        # auto-computes mass/inertia from each link's boundingObject
+        # when Physics{} is empty, so for controller work you may want
+        # to either skip dynamics here or pull the inertia values from
+        # Webots' supervisor API.
+        # ============================================================
         mass = np.array([0.00, 17.40, 4.80, 0.82, 0.34, 0.09])
         com = np.array([[0.000, 0.068, 0.000, 0.000, 0.000, 0.000],
                         [0.000, 0.006,-0.070, 0.000, 0.000, 0.000],
@@ -56,22 +86,18 @@ class Puma560:
         Iyy = np.array([0.350, 0.524, 0.0125, 0.0018, 0.00030, 0.00015])
         Izz = np.array([0.000, 0.539, 0.086, 0.0013, 0.00040, 0.00004])
 
-        # Home configs of each link frame in space (frame at CoM)
         self.Mlist_abs = []
         for i in range(6):
             com_space = self.Q[i] + com[:, i]
             Mi = np.eye(4); Mi[0:3, 3] = com_space
             self.Mlist_abs.append(Mi)
 
-        # Spatial inertias G_i (6x6) in each link frame
         self.Glist = [np.diag([Ixx[i], Iyy[i], Izz[i], mass[i], mass[i], mass[i]])
                     for i in range(6)]
 
-        # Body-frame screw axes: A_i = Ad_{M_i^-1} S_i
         self.Alist = [self._adjoint(np.linalg.inv(self.Mlist_abs[i])) @ self.slist[:, i]
                     for i in range(6)]
 
-        # Relative transforms M_{i-1, i} (link i-1 frame → link i frame at home)
         self.Mrel = []
         prev = np.eye(4)
         for i in range(6):
