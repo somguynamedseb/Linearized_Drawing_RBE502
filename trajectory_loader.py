@@ -1,12 +1,16 @@
 """
-Load a trajectory.json file produced by trajectory_drawer.py and turn it into
-(qd_fun, qd_dot_fun, qd_ddot_fun) for a computed-torque controller.
+Load a trajectory.json file and produce (qd_fun, qd_dot_fun, qd_ddot_fun)
+for a computed-torque controller.
 
-Robust seeding strategy:
-  - try a curated list of seed candidates at waypoint 0
-  - if none clears the FK round-trip threshold, try random seeds
-  - print a diagnostic table so you can see why each seed succeeded or failed
-  - guard the warm-start: only update seed on clean solutions
+Two safeguards against insane joint values:
+  1. After every IK call, wrap each joint to [-pi, pi].
+  2. After all waypoints are solved, "unwrap" the sequence so adjacent
+     waypoints are continuous (np.unwrap). This eliminates branch-flip
+     spikes in the spline.
+
+The trajectory the spline sees is monotonically continuous; the values
+fed to the controller may exceed [-pi, pi] only by small offsets needed
+to keep continuity, never by tens of radians.
 """
 
 import json
@@ -25,8 +29,13 @@ _DEFAULT_SEEDS = [
 
 IK_MAX_ITER  = 50
 IK_TOL       = 1e-3
-CLEAN_FK_TOL = 5e-3   # 5 mm; we'll FK-verify the spline anyway
-N_RANDOM     = 30     # random-seed retries if curated list comes up empty
+CLEAN_FK_TOL = 5e-3
+N_RANDOM     = 30
+
+
+def _wrap(q):
+    """Wrap each joint to [-pi, pi]."""
+    return (np.asarray(q) + np.pi) % (2 * np.pi) - np.pi
 
 
 def _solve_one(robot, x, y, z, R_ee, seed):
@@ -34,6 +43,7 @@ def _solve_one(robot, x, y, z, R_ee, seed):
     T_sd[:3, :3] = R_ee
     T_sd[:3, 3]  = [x, y, z]
     q_sol, ok = robot.IK(T_sd, theta0=seed, tol=IK_TOL, max_iter=IK_MAX_ITER)
+    q_sol = _wrap(q_sol)                                         # <-- key fix
     err = np.linalg.norm(robot.FK(q_sol)[:3, 3] - T_sd[:3, 3])
     return q_sol, ok, err
 
@@ -41,7 +51,7 @@ def _solve_one(robot, x, y, z, R_ee, seed):
 def _find_first_seed(robot, p0, R_ee, q_seed, verbose=True):
     candidates = []
     if q_seed is not None:
-        candidates.append(("user-supplied", np.asarray(q_seed, dtype=float)))
+        candidates.append(("user-supplied", _wrap(q_seed)))
     candidates += list(_DEFAULT_SEEDS)
 
     if verbose:
@@ -58,7 +68,6 @@ def _find_first_seed(robot, p0, R_ee, q_seed, verbose=True):
             if best is None or err < best[1]:
                 best = (q_sol, err, name)
 
-    # Fallback — random seeds in [-pi, pi]^6
     if best is None:
         if verbose:
             print(f"[trajectory] curated seeds failed, trying {N_RANDOM} random seeds")
@@ -76,34 +85,12 @@ def _find_first_seed(robot, p0, R_ee, q_seed, verbose=True):
         raise RuntimeError(
             "Could not solve IK at the first waypoint with any seed.\n"
             f"  target xyz = [{p0['x']:.4f}, {p0['y']:.4f}, {p0['z']:.4f}]\n"
-            f"  R_ee =\n{R_ee}\n"
-            "Run debug_trajectory.py to investigate. The pose may be unreachable "
-            "with this orientation, or the IK tolerance may need adjusting."
+            "Run debug_trajectory.py to investigate."
         )
     return best
 
 
 def trajectory_from_json(path, robot, R_ee=None, q_seed=None, k=5, verbose=True):
-    """
-    Parameters
-    ----------
-    path : str
-    robot : Puma560
-    R_ee : (3,3) ndarray, optional
-        End-effector orientation. Default = identity. For drawing at Z<0 use
-        np.diag([1, -1, -1]).
-    q_seed : (6,) ndarray, optional
-        Preferred seed for IK at waypoint 0. Tried before the default list.
-    k : int
-        Spline order; 5 = quintic (recommended for computed torque).
-    verbose : bool
-        Print the seed-search table.
-
-    Returns
-    -------
-    qd_fun, qd_dot_fun, qd_ddot_fun : callable(t) -> (n,) ndarray
-    T_total : float
-    """
     with open(path) as f:
         data = json.load(f)
 
@@ -134,15 +121,30 @@ def trajectory_from_json(path, robot, R_ee=None, q_seed=None, k=5, verbose=True)
         print(f"[trajectory] IK problems at {len(failures)}/{len(data)} waypoints "
               f"(first few: {failures[:5]})")
 
-    keep = np.concatenate([[True], np.diff(times) > 1e-9])
-    times, q_wp = times[keep], q_wp[keep]
+    # ---- Unwrap each joint along the time axis -----------------------------
+    # Wrapping each waypoint individually to [-pi, pi] means two adjacent
+    # waypoints can sit on opposite sides of the wrap, looking like a 2*pi
+    # jump. np.unwrap removes those by adding/subtracting 2*pi.
+    q_wp_unwrapped = np.unwrap(q_wp, axis=0)
 
-    if len(q_wp) > 1:
-        jumps = np.linalg.norm(np.diff(q_wp, axis=0), axis=1)
+    if verbose:
+        added = q_wp_unwrapped - q_wp
+        nonzero = np.any(np.abs(added) > 1e-9, axis=0)
+        if nonzero.any():
+            joints = [j+1 for j, flag in enumerate(nonzero) if flag]
+            print(f"[trajectory] unwrap added 2*pi offsets on joints {joints}")
+
+    # Drop duplicate timestamps
+    keep = np.concatenate([[True], np.diff(times) > 1e-9])
+    times, q_wp_unwrapped = times[keep], q_wp_unwrapped[keep]
+
+    # Branch-flip warning AFTER unwrap — should now be quiet
+    if len(q_wp_unwrapped) > 1:
+        jumps = np.linalg.norm(np.diff(q_wp_unwrapped, axis=0), axis=1)
         if jumps.max() > 0.5 and verbose:
             idx = int(np.argmax(jumps))
-            print(f"[trajectory] large joint jump {jumps[idx]:.2f} rad at index {idx} "
-                  f"— possible branch flip.")
+            print(f"[trajectory] residual joint jump {jumps[idx]:.2f} rad at "
+                  f"index {idx} — possible branch flip not fixable by unwrap.")
 
     if len(times) < k + 1:
         raise ValueError(f"Need at least {k+1} unique waypoints for spline order {k}.")
@@ -150,16 +152,20 @@ def trajectory_from_json(path, robot, R_ee=None, q_seed=None, k=5, verbose=True)
     if k == 5:
         bc = ([(1, np.zeros(n)), (2, np.zeros(n))],
               [(1, np.zeros(n)), (2, np.zeros(n))])
-        spl = make_interp_spline(times, q_wp, k=5, bc_type=bc)
+        spl = make_interp_spline(times, q_wp_unwrapped, k=5, bc_type=bc)
     elif k == 3:
-        spl = make_interp_spline(times, q_wp, k=3, bc_type="clamped")
+        spl = make_interp_spline(times, q_wp_unwrapped, k=3, bc_type="clamped")
     else:
-        spl = make_interp_spline(times, q_wp, k=k)
+        spl = make_interp_spline(times, q_wp_unwrapped, k=k)
 
     spl_d   = spl.derivative(1)
     spl_dd  = spl.derivative(2)
     T_total = float(times[-1])
-    qstart, qend = q_wp[0].copy(), q_wp[-1].copy()
+    qstart, qend = q_wp_unwrapped[0].copy(), q_wp_unwrapped[-1].copy()
+
+    if verbose:
+        print(f"[trajectory] joint range after processing: "
+              f"[{q_wp_unwrapped.min():.3f}, {q_wp_unwrapped.max():.3f}] rad")
 
     def qd_fun(t):
         if t <= 0:        return qstart.copy()
