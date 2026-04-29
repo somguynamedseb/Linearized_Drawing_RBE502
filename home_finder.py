@@ -6,6 +6,6 @@ from puma_visualizer import PumaVisualizer
 robot = puma.Puma560()
 
 print(robot.M)
-viz   = PumaVisualizer(robot)
+# viz   = PumaVisualizer(robot)
 
-viz.show_pose([0]*6)
+# viz.show_pose([0]*6)

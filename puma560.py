@@ -194,7 +194,7 @@ class Puma560:
             T = np.dot(T, e_w_theta[i])
         T = np.dot(T, self.M)
         return T
-    
+
     def IK(self, T_sd, theta0=None, tol=1e-3, max_iter=100, lam=0.05,
         n_restarts=8, seed=0):
         """
@@ -243,7 +243,6 @@ class Puma560:
                 best_err, best_q = err, q
 
         return best_q, False
-
 
     def _ik_single(self, T_sd, theta0, tol, max_iter, lam):
         """Single-start damped LS IK with joint-limit handling."""
@@ -346,7 +345,7 @@ class Puma560:
                     Gamma = 0.5 * (dM[i,j,k] + dM[i,k,j] - dM[j,k,i])
                     C[i, j] += Gamma * qd[k]
         return C
-    
+
     def tau_example(self, q, qd, qdd):
         M = self.mass_matrix(q)           # 6x6
         C = self.coriolis_matrix(q, qd)   # 6x6

@@ -24,6 +24,8 @@ Kp = np.diag([100] * n)
 Kv = np.diag([20]  * n)
 
 R_down = np.diag([1.0, -1.0, -1.0])
+
+
 qd_fun, qd_dot_fun, qd_ddot_fun, T_total = trajectory_from_json(
     "trajectory.json", robot, R_ee=R_down
 )
